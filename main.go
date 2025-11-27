@@ -8,6 +8,7 @@ import (
 
 	"github.com/disgoorg/disgo"
 	"github.com/disgoorg/disgo/bot"
+	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/disgo/events"
 	"github.com/disgoorg/disgo/gateway"
 )
@@ -20,12 +21,16 @@ func main() {
 			gateway.WithIntents(
 				gateway.IntentGuilds,
 				gateway.IntentGuildMessages,
-				gateway.IntentDirectMessages,
+				gateway.IntentMessageContent,
 			),
 		),
 		// add event listeners
 		bot.WithEventListenerFunc(func(e *events.MessageCreate) {
-			// event code here
+			if e.Message.Author.Bot {
+				return
+			} else if e.Message.Content == "ping" {
+				e.Client().Rest().CreateMessage(e.channelID, discord.NewMessageCreateBuilder().SetContent("pong").Build())
+			}
 		}),
 	)
 	if err != nil {
