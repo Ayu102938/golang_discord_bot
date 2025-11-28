@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"log"
 	"os"
 	"os/signal"
 	"syscall"
@@ -11,9 +12,17 @@ import (
 	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/disgo/events"
 	"github.com/disgoorg/disgo/gateway"
+	"github.com/joho/godotenv"
 )
 
 func main() {
+
+	if err := godotenv.Load(); err != nil {
+		log.Println("could not find .env file")
+	}
+
+	token := os.Getenv("DISCORD_BOT_TOKEN")
+
 	client, err := disgo.New("token",
 		// set gateway options
 		bot.WithGatewayConfigOpts(
