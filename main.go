@@ -23,7 +23,7 @@ func main() {
 
 	token := os.Getenv("DISCORD_BOT_TOKEN")
 
-	client, err := disgo.New("token",
+	client, err := disgo.New(token,
 		// set gateway options
 		bot.WithGatewayConfigOpts(
 			// set enabled intents
@@ -38,7 +38,7 @@ func main() {
 			if e.Message.Author.Bot {
 				return
 			} else if e.Message.Content == "ping" {
-				e.Client().Rest().CreateMessage(e.channelID, discord.NewMessageCreateBuilder().SetContent("pong").Build())
+				e.Client().Rest().CreateMessage(e.ChannelID, discord.NewMessageCreateBuilder().SetContent("pong").Build())
 			}
 		}),
 	)
