@@ -106,6 +106,7 @@ func main() {
 						if err != nil {
 							e.Client().Rest().CreateMessage(e.ChannelID, discord.NewMessageCreateBuilder().SetContent("設定の保存に失敗しました").Build())
 						} else {
+							// Discord上では <#ID> と送ると自動的に「#チャンネル名」というリンク表示になります
 							msg := fmt.Sprintf("通知を <#%s> に設定しました", channelID)
 							e.Client().Rest().CreateMessage(e.ChannelID, discord.NewMessageCreateBuilder().SetContent(msg).Build())
 						}
@@ -129,6 +130,15 @@ func main() {
 			cmd := strings.TrimPrefix(e.Message.Content, prefix)
 
 			if cmd == "timetable" {
+				// ★ここに追加: チャンネル設定の事前チェック
+				configs := loadChannelConfigs()
+				if _, ok := configs[userID]; !ok {
+					// 設定がない場合
+					e.Client().Rest().CreateMessage(e.ChannelID, discord.NewMessageCreateBuilder().SetContent("!setchで通知の設定をしてください").Build())
+					return
+				}
+
+				// 設定がある場合は通常通り開始
 				mu.Lock()
 				sessions[userID] = &UserSession{Step: 1}
 				mu.Unlock()
@@ -239,6 +249,7 @@ func loadChannelConfigs() map[string]string {
 	m := make(map[string]string)
 	f, err := os.Open("channels.csv")
 	if err != nil {
+		// ファイルがない場合などは空のマップを返す
 		return m
 	}
 	defer f.Close()
@@ -267,8 +278,7 @@ func sendDM(client bot.Client, userID, title, date string) {
 		return
 	}
 	msg := fmt.Sprintf("🔔 **リマインド: 明日は「%s」の予定があります**\n日付: %s", title, date)
-
-	// ★修正箇所: channel.ID を channel.ID() に変更しました
+	// ★修正済み: channel.ID() を使用
 	client.Rest().CreateMessage(channel.ID(), discord.NewMessageCreateBuilder().SetContent(msg).Build())
 }
 
