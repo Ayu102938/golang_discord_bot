@@ -17,12 +17,13 @@ import (
 	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/disgo/events"
 	"github.com/disgoorg/disgo/gateway"
+	"github.com/disgoorg/snowflake/v2" // IDを扱うためのパッケージ
 	"github.com/joho/godotenv"
 )
 
 type UserSession struct {
-	Step  int
-	Title string
+	Step  int    // 1: タイトル入力, 2: 日付入力, 3: チャンネル設定入力
+	Title string // タイトル一時保存用
 }
 
 var sessions = make(map[string]*UserSession)
@@ -42,7 +43,7 @@ func main() {
 				gateway.IntentGuilds,
 				gateway.IntentGuildMessages,
 				gateway.IntentMessageContent,
-				gateway.IntentDirectMessages, // DMを送るために必要になることがあります
+				gateway.IntentDirectMessages,
 			),
 		),
 		bot.WithEventListenerFunc(func(e *events.MessageCreate) {
@@ -56,8 +57,10 @@ func main() {
 			session, exists := sessions[userID]
 			mu.Unlock()
 
+			// --- 会話モードの処理 ---
 			if exists {
 				switch session.Step {
+				// Step 1~2: タイムテーブル登録
 				case 1:
 					title := e.Message.Content
 					mu.Lock()
@@ -88,9 +91,37 @@ func main() {
 					delete(sessions, userID)
 					mu.Unlock()
 					return
+
+				// Step 3: チャンネル設定の処理
+				case 3:
+					input := strings.TrimSpace(e.Message.Content)
+
+					// チャンネルメンション形式 (<#数字>) かどうかチェック
+					if strings.HasPrefix(input, "<#") && strings.HasSuffix(input, ">") {
+						// IDだけ抽出 ( <# と > を削除)
+						channelID := input[2 : len(input)-1]
+
+						// チャンネル設定を保存
+						err := saveChannelConfig(userID, channelID)
+						if err != nil {
+							e.Client().Rest().CreateMessage(e.ChannelID, discord.NewMessageCreateBuilder().SetContent("設定の保存に失敗しました").Build())
+						} else {
+							msg := fmt.Sprintf("通知を <#%s> に設定しました", channelID)
+							e.Client().Rest().CreateMessage(e.ChannelID, discord.NewMessageCreateBuilder().SetContent(msg).Build())
+						}
+					} else {
+						e.Client().Rest().CreateMessage(e.ChannelID, discord.NewMessageCreateBuilder().SetContent("チャンネルを正しくメンションしてください (例: #雑談チャンネル)").Build())
+					}
+
+					// セッション終了
+					mu.Lock()
+					delete(sessions, userID)
+					mu.Unlock()
+					return
 				}
 			}
 
+			// --- コマンド判定 ---
 			if !strings.HasPrefix(e.Message.Content, prefix) {
 				return
 			}
@@ -99,11 +130,15 @@ func main() {
 
 			if cmd == "timetable" {
 				mu.Lock()
-				sessions[userID] = &UserSession{
-					Step: 1,
-				}
+				sessions[userID] = &UserSession{Step: 1}
 				mu.Unlock()
 				e.Client().Rest().CreateMessage(e.ChannelID, discord.NewMessageCreateBuilder().SetContent("タイトルを入力してください").Build())
+
+			} else if cmd == "setch" {
+				mu.Lock()
+				sessions[userID] = &UserSession{Step: 3} // Step 3はチャンネル設定モード
+				mu.Unlock()
+				e.Client().Rest().CreateMessage(e.ChannelID, discord.NewMessageCreateBuilder().SetContent("通知先のチャンネルを設定してください (例: #雑談チャンネル)").Build())
 			}
 		}),
 	)
@@ -115,7 +150,6 @@ func main() {
 		panic(err)
 	}
 
-	// ★ここでリマインダー監視ループを起動！ (並行処理)
 	go startReminderLoop(client)
 
 	s := make(chan os.Signal, 1)
@@ -129,33 +163,41 @@ func saveToCSV(userID, title, date string) error {
 		return err
 	}
 	defer f.Close()
-
 	writer := csv.NewWriter(f)
 	defer writer.Flush()
 	return writer.Write([]string{userID, title, date})
 }
 
-// ★リマインダー機能の本体
+func saveChannelConfig(userID, channelID string) error {
+	f, err := os.OpenFile("channels.csv", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	writer := csv.NewWriter(f)
+	defer writer.Flush()
+	return writer.Write([]string{userID, channelID})
+}
+
 func startReminderLoop(client bot.Client) {
-	// 1分ごとにチェックを行う
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 
 	for range ticker.C {
 		now := time.Now()
-
-		// 毎日 朝9時00分 にチェックして通知を送る設定
-		// (動作テストするときは、ここの時間を現在の時刻+1分とかにして試してください)
-		if now.Hour() == 9 && now.Minute() == 0 {
+		// 動作テスト用: 毎分0秒にチェック
+		if now.Second() == 0 {
+			// 本番運用時はこちらを使ってください:
+			// if now.Hour() == 9 && now.Minute() == 0 {
 			checkAndSendReminders(client)
 		}
 	}
 }
 
 func checkAndSendReminders(client bot.Client) {
+	// 1. タイムテーブル読み込み
 	f, err := os.Open("timetable.csv")
 	if err != nil {
-		// ファイルがない場合は何もしない
 		return
 	}
 	defer f.Close()
@@ -163,12 +205,13 @@ func checkAndSendReminders(client bot.Client) {
 	reader := csv.NewReader(f)
 	records, err := reader.ReadAll()
 	if err != nil {
-		log.Println("CSV read error:", err)
 		return
 	}
 
-	// 「明日」の日付文字列を作る (例: 今日が12/10なら "2025/12/11")
 	tomorrow := time.Now().AddDate(0, 0, 1).Format("2006/01/02")
+
+	// 2. チャンネル設定読み込み
+	channelMap := loadChannelConfigs()
 
 	for _, record := range records {
 		if len(record) < 3 {
@@ -178,29 +221,58 @@ func checkAndSendReminders(client bot.Client) {
 		title := record[1]
 		date := record[2]
 
-		// CSVの日付が「明日」と一致するか？
 		if date == tomorrow {
-			sendDM(client, userID, title, date)
+			targetChannelID, ok := channelMap[userID]
+
+			if ok {
+				// 設定があればそのチャンネルへ送信
+				sendNotification(client, targetChannelID, userID, title, date)
+			} else {
+				// 設定がなければDMへ送信
+				sendDM(client, userID, title, date)
+			}
 		}
 	}
 }
 
+func loadChannelConfigs() map[string]string {
+	m := make(map[string]string)
+	f, err := os.Open("channels.csv")
+	if err != nil {
+		return m
+	}
+	defer f.Close()
+
+	reader := csv.NewReader(f)
+	records, _ := reader.ReadAll()
+
+	for _, row := range records {
+		if len(row) >= 2 {
+			m[row[0]] = row[1]
+		}
+	}
+	return m
+}
+
+func sendNotification(client bot.Client, channelID, userID, title, date string) {
+	msg := fmt.Sprintf("🔔 <@%s> **リマインド: 明日は「%s」の予定があります**\n日付: %s\n準備はできていますか？", userID, title, date)
+	client.Rest().CreateMessage(snowflakeID(channelID), discord.NewMessageCreateBuilder().SetContent(msg).Build())
+	log.Printf("Sent channel reminder to %s for %s", channelID, title)
+}
+
 func sendDM(client bot.Client, userID, title, date string) {
-	// DMチャンネルを作成 (まだ無ければ作成される)
-	channel, err := client.Rest().CreateDMUser(snowflake(userID))
+	channel, err := client.Rest().CreateDMChannel(snowflakeID(userID))
 	if err != nil {
 		log.Println("DM作成エラー:", err)
 		return
 	}
+	msg := fmt.Sprintf("🔔 **リマインド: 明日は「%s」の予定があります**\n日付: %s", title, date)
 
-	msg := fmt.Sprintf("🔔 **リマインド: 明日は「%s」の予定があります**\n日付: %s\n準備はできていますか？", title, date)
-
-	client.Rest().CreateMessage(channel.ID, discord.NewMessageCreateBuilder().SetContent(msg).Build())
-	log.Printf("Sent reminder to %s for %s", userID, title)
+	// ★修正箇所: channel.ID を channel.ID() に変更しました
+	client.Rest().CreateMessage(channel.ID(), discord.NewMessageCreateBuilder().SetContent(msg).Build())
 }
 
-// 文字列IDをSnowflake型に変換するヘルパー関数
-func snowflake(id string) discord.Snowflake {
-	s, _ := discord.ParseSnowflake(id)
+func snowflakeID(id string) snowflake.ID {
+	s, _ := snowflake.Parse(id)
 	return s
 }
