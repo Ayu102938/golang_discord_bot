@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/disgoorg/disgo"
@@ -22,6 +23,7 @@ func main() {
 	}
 
 	token := os.Getenv("DISCORD_BOT_TOKEN")
+	prefix := "!"
 
 	client, err := disgo.New(token,
 		// set gateway options
@@ -37,7 +39,17 @@ func main() {
 		bot.WithEventListenerFunc(func(e *events.MessageCreate) {
 			if e.Message.Author.Bot {
 				return
-			} else if e.Message.Content == "ping" {
+			}
+			// メッセージが ":" で始まっていなければ何もしない
+			if !strings.HasPrefix(e.Message.Content, prefix) {
+				return
+			}
+
+			// 3. プレフィックスを削除して中身を取り出す (例: ":ping" -> "ping")
+			cmd := strings.TrimPrefix(e.Message.Content, prefix)
+
+			// 4. コマンドに応じた処理
+			if cmd == "ping" {
 				e.Client().Rest().CreateMessage(e.ChannelID, discord.NewMessageCreateBuilder().SetContent("pong").Build())
 			}
 		}),
