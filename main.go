@@ -335,7 +335,7 @@ func handleSlashCommand(e *events.InteractionCreate, d discord.ApplicationComman
 					discord.TextInputComponent{
 						CustomID:    "remind",
 						Style:       discord.TextInputStyleShort,
-						Label:       "リマインド時期 (0=当日, 1d, 12h)",
+						Label:       "リマインド時期 (0=当日0時, 1d, 12h)",
 						Placeholder: "例: 1d, 3h, 0",
 						Required:    true,
 					},
@@ -501,7 +501,7 @@ func checkAndSendReminders(client bot.Client, force bool) {
 		}
 
 		// Calculate notify time
-		eventTime := time.Date(targetDate.Year(), targetDate.Month(), targetDate.Day(), 9, 0, 0, 0, time.Local)
+		eventTime := time.Date(targetDate.Year(), targetDate.Month(), targetDate.Day(), 0, 0, 0, 0, time.Local)
 		duration, _ := parseCustomDuration(t.RemindRule)
 		notifyTime := eventTime.Add(-duration)
 
