@@ -9,8 +9,7 @@
 *.csv
 
 # Reports
-phase1_report.md
-phase1_report.md
+phase*_report.md
 
 # IDEs
 .vscode/

@@ -309,7 +309,7 @@ func handleSlashCommand(e *events.InteractionCreate, d discord.ApplicationComman
 						CustomID:    "title",
 						Style:       discord.TextInputStyleShort,
 						Label:       "タイトル",
-						Placeholder: "例: 会議, 燃えるゴミ",
+						Placeholder: "例: 会議, 課題",
 						Required:    true,
 					},
 				},
@@ -569,7 +569,7 @@ func registerCommands(client bot.Client) {
 	commands := []discord.ApplicationCommandCreate{
 		discord.SlashCommandCreate{
 			Name:        "timetable",
-			Description: "予定の登録フォームを表示します",
+			Description: "タイムテーブルの入力フォームを表示します",
 		},
 		discord.SlashCommandCreate{
 			Name:        "setch",
@@ -577,11 +577,11 @@ func registerCommands(client bot.Client) {
 		},
 		discord.SlashCommandCreate{
 			Name:        "list",
-			Description: "登録されている予定を表示します",
+			Description: "登録されているタイムテーブルを表示します",
 		},
 		discord.SlashCommandCreate{
 			Name:        "delete",
-			Description: "予定を削除します",
+			Description: "タイムテーブルを削除します",
 			Options: []discord.ApplicationCommandOption{
 				discord.ApplicationCommandOptionInt{
 					Name:        "index",
