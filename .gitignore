@@ -1,1 +1,17 @@
+# Binaries
+*.exe
+*.dll
+
+# Environment Variables
 .env
+
+# Data
+*.csv
+
+# Reports
+phase1_report.md
+phase1_report.md
+
+# IDEs
+.vscode/
+.idea/
