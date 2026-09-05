@@ -109,9 +109,7 @@ func main() {
 	<-s
 
 	log.Println("Shutting down...")
-	if err := client.Close(context.Background()); err != nil {
-		log.Println("Error closing client:", err)
-	}
+	client.Close(context.Background())
 	cancel() // Stop reminder loop goroutine
 }
 
