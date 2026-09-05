@@ -109,10 +109,10 @@ func main() {
 	<-s
 
 	log.Println("Shutting down...")
-	cancel() // Stop reminder loop goroutine
-	if err := client.CloseGateway(); err != nil {
-		log.Println("Error closing gateway:", err)
+	if err := client.Close(context.Background()); err != nil {
+		log.Println("Error closing client:", err)
 	}
+	cancel() // Stop reminder loop goroutine
 }
 
 // --- Data Persistence (Load/Save) ---
