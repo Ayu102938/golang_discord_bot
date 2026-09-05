@@ -30,8 +30,9 @@ const (
 )
 
 type UserSession struct {
-	Step    int
-	GuildID string
+	Step        int
+	GuildID     string
+	LastUpdated time.Time
 }
 
 type TimetableEntry struct {
@@ -103,6 +104,11 @@ func main() {
 	s := make(chan os.Signal, 1)
 	signal.Notify(s, syscall.SIGINT, syscall.SIGTERM)
 	<-s
+
+	log.Println("Shutting down...")
+	if err := client.CloseGateway(); err != nil {
+		log.Println("Error closing gateway:", err)
+	}
 }
 
 // --- Data Persistence (Load/Save) ---
@@ -115,7 +121,11 @@ func loadData() {
 	f, err := os.Open(TimetableFile)
 	if err == nil {
 		defer f.Close()
-		records, _ := csv.NewReader(f).ReadAll()
+		records, readErr := csv.NewReader(f).ReadAll()
+		if readErr != nil {
+			log.Printf("Warning: failed to parse %s, starting with empty data: %v", TimetableFile, readErr)
+			records = nil
+		}
 		timetables = nil // Clear existing
 		for _, r := range records {
 			if len(r) >= 6 {
@@ -138,7 +148,11 @@ func loadData() {
 	fc, err := os.Open(ChannelsFile)
 	if err == nil {
 		defer fc.Close()
-		records, _ := csv.NewReader(fc).ReadAll()
+		records, readErr := csv.NewReader(fc).ReadAll()
+		if readErr != nil {
+			log.Printf("Warning: failed to parse %s, starting with empty data: %v", ChannelsFile, readErr)
+			records = nil
+		}
 		for _, r := range records {
 			if len(r) >= 3 {
 				key := r[0] + "_" + r[1] // UserID_GuildID
@@ -216,7 +230,30 @@ func deleteTimetableEntry(userID, guildID string, targetIndex int) error {
 	return nil
 }
 
-// updateChannelConfig updates memory and appends to file (simple approach).
+// saveChannels rewrites the entire channels.csv from memory (safe under lock).
+// Note: Caller must hold dataMu.
+func saveChannels() {
+	f, err := os.OpenFile(ChannelsFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		log.Println("Error saving channels:", err)
+		return
+	}
+	defer f.Close()
+
+	w := csv.NewWriter(f)
+	defer w.Flush()
+
+	// channelMap keys are "UserID_GuildID" — split them back into columns for CSV.
+	for key, channelID := range channelMap {
+		parts := strings.SplitN(key, "_", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		w.Write([]string{parts[0], parts[1], channelID})
+	}
+}
+
+// updateChannelConfig updates memory and rewrites the channels file (no duplicates).
 func updateChannelConfig(userID, guildID, channelID string) error {
 	dataMu.Lock()
 	defer dataMu.Unlock()
@@ -224,16 +261,8 @@ func updateChannelConfig(userID, guildID, channelID string) error {
 	key := userID + "_" + guildID
 	channelMap[key] = channelID
 
-	// Append to file (duplicates in CSV are handled by Load logic taking last/all, but simpler to append)
-	// Ideally we should compact this file occasionally, but sticking to simple append for now.
-	f, err := os.OpenFile(ChannelsFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	w := csv.NewWriter(f)
-	defer w.Flush()
-	return w.Write([]string{userID, guildID, channelID})
+	saveChannels() // Rewrite file to avoid duplicate rows
+	return nil
 }
 
 // --- Interaction Handlers ---
@@ -345,7 +374,7 @@ func handleSlashCommand(e *events.InteractionCreate, d discord.ApplicationComman
 
 	case "setch":
 		sessionsMu.Lock()
-		sessions[userID] = &UserSession{Step: StepSetChannel, GuildID: guildID}
+		sessions[userID] = &UserSession{Step: StepSetChannel, GuildID: guildID, LastUpdated: time.Now()}
 		sessionsMu.Unlock()
 		reply("通知先のチャンネルをメンションして入力してください (例: #雑談)", false)
 
@@ -440,6 +469,9 @@ func onMessage(e *events.MessageCreate) {
 
 	sessionsMu.Lock()
 	session, exists := sessions[userID]
+	if exists && session.Step == StepSetChannel {
+		session.LastUpdated = time.Now() // Refresh timer on user activity
+	}
 	sessionsMu.Unlock()
 
 	if exists && session.Step == StepSetChannel {
@@ -468,6 +500,27 @@ func startReminderLoop(client bot.Client) {
 	defer ticker.Stop()
 	for range ticker.C {
 		checkAndSendReminders(client, false)
+		cleanupExpiredSessions()
+	}
+}
+
+// cleanupExpiredSessions removes sessions that have been inactive for more than 30 minutes.
+func cleanupExpiredSessions() {
+	const sessionTTL = 30 * time.Minute
+	cutoff := time.Now().Add(-sessionTTL)
+
+	sessionsMu.Lock()
+	defer sessionsMu.Unlock()
+
+	removed := 0
+	for userID, s := range sessions {
+		if s.LastUpdated.Before(cutoff) {
+			delete(sessions, userID)
+			removed++
+		}
+	}
+	if removed > 0 {
+		log.Printf("Cleaned up %d expired session(s)", removed)
 	}
 }
 
@@ -528,10 +581,20 @@ func checkAndSendReminders(client bot.Client, force bool) {
 			}
 
 			if hasCh {
-				client.Rest().CreateMessage(snowflakeID(chID), discord.NewMessageCreateBuilder().SetContent(msg).Build())
+				sfID, err := snowflakeID(chID)
+				if err != nil {
+					log.Printf("Skipping reminder for %q: invalid channel ID %q", t.Title, chID)
+					continue
+				}
+				client.Rest().CreateMessage(sfID, discord.NewMessageCreateBuilder().SetContent(msg).Build())
 			} else {
 				// DM fallback
-				ch, err := client.Rest().CreateDMChannel(snowflakeID(t.UserID))
+				userSF, err := snowflakeID(t.UserID)
+				if err != nil {
+					log.Printf("Skipping DM for %q: invalid user ID %q", t.Title, t.UserID)
+					continue
+				}
+				ch, err := client.Rest().CreateDMChannel(userSF)
 				if err == nil {
 					client.Rest().CreateMessage(ch.ID(), discord.NewMessageCreateBuilder().SetContent(msg).Build())
 				}
@@ -618,7 +681,11 @@ func parseCustomDuration(s string) (time.Duration, error) {
 	return time.ParseDuration(s)
 }
 
-func snowflakeID(id string) snowflake.ID {
-	s, _ := snowflake.Parse(id)
-	return s
+func snowflakeID(id string) (snowflake.ID, error) {
+	s, err := snowflake.Parse(id)
+	if err != nil {
+		log.Printf("Warning: failed to parse snowflake ID %q: %v", id, err)
+		return 0, err
+	}
+	return s, nil
 }
