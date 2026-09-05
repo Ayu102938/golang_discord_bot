@@ -94,11 +94,14 @@ func main() {
 
 	registerCommands(client)
 
-	if err = client.OpenGateway(context.TODO()); err != nil {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err = client.OpenGateway(ctx); err != nil {
 		log.Fatal("Error opening gateway:", err)
 	}
 
-	go startReminderLoop(client)
+	go startReminderLoop(ctx, client)
 
 	log.Println("Bot is running. Press CTRL-C to exit.")
 	s := make(chan os.Signal, 1)
@@ -106,6 +109,7 @@ func main() {
 	<-s
 
 	log.Println("Shutting down...")
+	cancel() // Stop reminder loop goroutine
 	if err := client.CloseGateway(); err != nil {
 		log.Println("Error closing gateway:", err)
 	}
@@ -488,19 +492,27 @@ func onMessage(e *events.MessageCreate) {
 			return
 		}
 		sessionsMu.Lock()
-		delete(sessions, userID)
+		if sessions[userID] == session { // only delete if it's the same session we read
+			delete(sessions, userID)
+		}
 		sessionsMu.Unlock()
 	}
 }
 
 // --- Reminders ---
 
-func startReminderLoop(client bot.Client) {
+func startReminderLoop(ctx context.Context, client bot.Client) {
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
-	for range ticker.C {
-		checkAndSendReminders(client, false)
-		cleanupExpiredSessions()
+	for {
+		select {
+		case <-ctx.Done():
+			log.Println("Reminder loop stopped")
+			return
+		case <-ticker.C:
+			checkAndSendReminders(client, false)
+			cleanupExpiredSessions()
+		}
 	}
 }
 
